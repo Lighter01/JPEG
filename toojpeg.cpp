@@ -244,13 +244,13 @@ void DCT(float block[8*8], uint8_t stride)
 {
     float block_cpy[8 * 8];
 
-    float C_i, C_j;
+    #pragma omp parallel for num_threads(8) collapse(2) schedule(static)
     for (int i = 0; i < 8; ++i)
     {
         for (int j = 0; j < 8; ++j)
         {
-            C_i = (i > 0) ? 1.0 : INV_SQRT2;
-            C_j = (j > 0) ? 1.0 : INV_SQRT2;
+            float C_i = (i > 0) ? 1.0 : INV_SQRT2;
+            float C_j = (j > 0) ? 1.0 : INV_SQRT2;
             block_cpy[i * 8 + j] = 0;
 
             for (int x = 0; x < 8; ++x)
@@ -286,6 +286,7 @@ int16_t encodeBlock(BitWriter& writer, float block[8][8], const float scaled[8*8
 //        DCT(block64 + offset*1, 8);
 
     // scale
+
     for (auto i = 0; i < 8*8; i++)
         block64[i] *= scaled[i];
 
