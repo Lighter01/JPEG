@@ -90,7 +90,6 @@ void runTest(unsigned char quality, bool downsample, const char* comment)
     }
 
     stat_ << "filename;width;height;isRGB;quality;downsample;seconds;milliseconds;size before;size after\n";
-    Timer timer;
     int width, height;
     bool isRGB;
 
@@ -110,11 +109,7 @@ void runTest(unsigned char quality, bool downsample, const char* comment)
 
         unsigned char* image = read_image(path, width, height, isRGB);
 
-        timer.reset();
-
-        TooJpeg::writeJpeg(myOutput, image, width, height, isRGB, quality, downsample, comment);
-
-        auto[seconds, milliseconds] = timer.elapsed();
+        auto[seconds, milliseconds] = TooJpeg::writeJpeg(myOutput, image, width, height, isRGB, quality, downsample, comment);
 
         f_size_after = getFileSize(fs::path("results/" + new_image_name + ".jpg"));
 

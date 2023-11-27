@@ -1,7 +1,7 @@
 #ifndef TOOJPEG_H
 #define TOOJPEG_H
 
-
+#include <chrono>
 // This is a compact baseline JPEG/JFIF writer, written in C++ (but looks like C for the most part).
 // Its interface has only one function: writeJpeg() - and that's it !
 //
@@ -12,6 +12,29 @@
 // void myOutput(unsigned char oneByte) { fputc(oneByte, myFileHandle); } // save byte to file
 // => let's go !
 // TooJpeg::writeJpeg(myOutput, mypixels, 1024, 768);
+
+class Timer
+{
+private:
+    using Clock = std::chrono::high_resolution_clock;
+    using Second = std::chrono::duration<double, std::ratio<1>>;
+
+    std::chrono::time_point<Clock> m_beg { Clock::now() };
+
+public:
+    void reset()
+    {
+        m_beg = Clock::now();
+    }
+
+    std::pair<double, int> elapsed() const
+    {
+        auto time = Clock::now() - m_beg;
+        double sec = std::chrono::duration_cast<Second>(time).count();
+        int millisec = std::chrono::duration_cast<std::chrono::milliseconds>(time).count();
+        return std::make_pair(sec, millisec);
+    }
+};
 
 namespace TooJpeg
 {
@@ -28,7 +51,7 @@ typedef void (*WRITE_ONE_BYTE)(unsigned char);
 // quality      - between 1 (worst) and 100 (best)
 // downsample   - if true then YCbCr 4:2:0 format is used (smaller size, minor quality loss) instead of 4:4:4, not relevant for grayscale
 // comment      - optional JPEG comment (0/NULL if no comment), must not contain ASCII code 0xFF
-bool writeJpeg(WRITE_ONE_BYTE output, const void* pixels, unsigned short width, unsigned short height,
+std::pair<double, int> writeJpeg(WRITE_ONE_BYTE output, const void* pixels, unsigned short width, unsigned short height,
                bool isRGB = true, unsigned char quality = 90, bool downsample = false, const char* comment = nullptr);
 } // namespace TooJpeg
 

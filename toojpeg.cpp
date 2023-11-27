@@ -247,7 +247,7 @@ void DCT(float block[8*8], uint8_t stride)
 {
     float block_cpy[8 * 8];
 
-//    #pragma omp parallel for num_threads(2) collapse(2) schedule(dynamic)
+//    #pragma omp parallel for num_threads(4) collapse(2) schedule(dynamic)
     for (int i = 0; i < 8; ++i)
     {
         for (int j = 0; j < 8; ++j)
@@ -380,6 +380,7 @@ void write_into_file(int mcuSize, int height, int width, int maxWidth, int maxHe
         return a.pos < b.pos;
     };
 
+    if (isRGB)
     #pragma omp parallel sections num_threads(3)
     {
         #pragma omp section
@@ -394,6 +395,9 @@ void write_into_file(int mcuSize, int height, int width, int maxWidth, int maxHe
         {
             std::sort(b_Cr.begin(), b_Cr.end(), comp);
         }
+    } else
+    {
+        std::sort(b_Y.begin(), b_Y.end(),  comp);
     }
 
 //    std::sort(b_Y.begin(), b_Y.end(),  comp);
@@ -445,15 +449,15 @@ void generateHuffmanTable(const uint8_t numCodes[16], const uint8_t* values, Bit
 namespace TooJpeg
 {
 // the only exported function ...
-bool writeJpeg(WRITE_ONE_BYTE output, const void* pixels_, unsigned short width, unsigned short height,
+std::pair<double, int> writeJpeg(WRITE_ONE_BYTE output, const void* pixels_, unsigned short width, unsigned short height,
                bool isRGB, unsigned char quality_, bool downsample, const char* comment)
 {
     // reject invalid pointers
-    if (output == nullptr || pixels_ == nullptr)
-        return false;
-    // check image format
-    if (width == 0 || height == 0)
-        return false;
+//    if (output == nullptr || pixels_ == nullptr)
+//        return false;
+//    // check image format
+//    if (width == 0 || height == 0)
+//        return false;
 
     // number of components
     const auto numComponents = isRGB ? 3 : 1;
@@ -672,10 +676,12 @@ bool writeJpeg(WRITE_ONE_BYTE output, const void* pixels_, unsigned short width,
     blocks_Cb.clear();
     blocks_Cr.clear();
 
+    Timer t;
 
-    #pragma omp parallel for num_threads(16) collapse(2) private(Y, Cb, Cr) schedule(dynamic)
+    #pragma omp parallel for num_threads(8) private(Y, Cb, Cr) schedule(dynamic)
     for (auto mcuY = 0; mcuY < height; mcuY += mcuSize) // each step is either 8 or 16 (=mcuSize)
     {
+        #pragma omp parallel for num_threads(2) schedule(dynamic)
         for (auto mcuX = 0; mcuX < width; mcuX += mcuSize)
         {
 
@@ -778,18 +784,19 @@ bool writeJpeg(WRITE_ONE_BYTE output, const void* pixels_, unsigned short width,
         }
     }
 
-    write_into_file(mcuSize, height, width, maxWidth, maxHeight, bitWriter, isRGB,
-                         huffmanLuminanceDC, huffmanLuminanceAC,
-                         huffmanChrominanceDC, huffmanChrominanceAC, codewords,
-                         blocks_Y, blocks_Cb, blocks_Cr);
+    std::pair<double, int> time = t.elapsed();
 
+//    write_into_file(mcuSize, height, width, maxWidth, maxHeight, bitWriter, isRGB,
+//                         huffmanLuminanceDC, huffmanLuminanceAC,
+//                         huffmanChrominanceDC, huffmanChrominanceAC, codewords,
+//                         blocks_Y, blocks_Cb, blocks_Cr);
 
     bitWriter.flush(); // now image is completely encoded, write any bits still left in the buffer
 
     // ///////////////////////////
     // EOI marker
     bitWriter << 0xFF << 0xD9; // this marker has no length, therefore I can't use addMarker()
-    return true;
+    return time;
 } // writeJpeg()
 } // namespace TooJpeg
 
