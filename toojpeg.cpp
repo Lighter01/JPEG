@@ -247,7 +247,7 @@ void DCT(float block[8*8], uint8_t stride)
 {
     float block_cpy[8 * 8];
 
-    #pragma omp parallel for num_threads(8) collapse(2) schedule(static)
+//    #pragma omp parallel for num_threads(2) collapse(2) schedule(dynamic)
     for (int i = 0; i < 8; ++i)
     {
         for (int j = 0; j < 8; ++j)
@@ -380,25 +380,35 @@ void write_into_file(int mcuSize, int height, int width, int maxWidth, int maxHe
         return a.pos < b.pos;
     };
 
-    std::sort(b_Y.begin(), b_Y.end(),  comp);
+    #pragma omp parallel sections num_threads(3)
+    {
+        #pragma omp section
+        {
+            std::sort(b_Y.begin(), b_Y.end(),  comp);
+        }
+        #pragma omp section
+        {
+            std::sort(b_Cd.begin(), b_Cd.end(), comp);
+        }
+        #pragma omp section
+        {
+            std::sort(b_Cr.begin(), b_Cr.end(), comp);
+        }
+    }
 
-    std::sort(b_Cd.begin(), b_Cd.end(), comp);
-
-    std::sort(b_Cr.begin(), b_Cr.end(), comp);
+//    std::sort(b_Y.begin(), b_Y.end(),  comp);
+//    std::sort(b_Cd.begin(), b_Cd.end(), comp);
+//    std::sort(b_Cr.begin(), b_Cr.end(), comp);
 
     int16_t lastYDC = 0, lastCbDC = 0, lastCrDC = 0;
     for (auto mcuY = 0; mcuY < height; mcuY += mcuSize)
     {
         for (auto mcuX = 0; mcuX < width; mcuX += mcuSize)
         {
-            for (auto blockY = 0; blockY < mcuSize; blockY += 8)
-            {
-                for (auto blockX = 0; blockX < mcuSize; blockX += 8)
-                {
-                    lastYDC = make_file_insertion(writer, b_Y.front(), huffmanDC_LUM, huffmanAC_LUM, codewords, lastYDC);
-                    b_Y.erase(b_Y.begin());
-                }
-            }
+
+            // Здесь добавляй еще два цикла для сэмплирования
+            lastYDC = make_file_insertion(writer, b_Y.front(), huffmanDC_LUM, huffmanAC_LUM, codewords, lastYDC);
+            b_Y.erase(b_Y.begin());
             if (!isRGB)
                 continue;
 
@@ -657,14 +667,18 @@ bool writeJpeg(WRITE_ONE_BYTE output, const void* pixels_, unsigned short width,
 
     // convert from RGB to YCbCr
     float Y[8][8], Cb[8][8], Cr[8][8];
+
     blocks_Y.clear();
     blocks_Cb.clear();
     blocks_Cr.clear();
 
+
+    #pragma omp parallel for num_threads(16) collapse(2) private(Y, Cb, Cr) schedule(dynamic)
     for (auto mcuY = 0; mcuY < height; mcuY += mcuSize) // each step is either 8 or 16 (=mcuSize)
     {
         for (auto mcuX = 0; mcuX < width; mcuX += mcuSize)
         {
+
             // YCbCr 4:4:4 format: each MCU is a 8x8 block - the same applies to grayscale images, too
             // YCbCr 4:2:0 format: each MCU represents a 16x16 block, stored as 4x 8x8 Y-blocks plus 1x 8x8 Cb and 1x 8x8 Cr block)
             for (auto blockY = 0; blockY < mcuSize; blockY += 8) // iterate once (YCbCr444 and grayscale) or twice (YCbCr420)
