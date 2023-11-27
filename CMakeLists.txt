@@ -16,7 +16,7 @@ endif()
 
 find_package(OpenMP REQUIRED)
 
-add_executable(toojpeg_omp main.cpp toojpeg.cpp toojpeg.h run_test.h run_test.cpp)
+add_executable(toojpeg_omp main.cpp toojpeg.cpp toojpeg.h run_test.h run_test.cpp preprocessed_image_holder.h)
 
 file(COPY ${CMAKE_SOURCE_DIR}/images/ DESTINATION ${CMAKE_BINARY_DIR}/images/)
 

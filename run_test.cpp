@@ -79,8 +79,6 @@ void runTest(unsigned char quality, bool downsample, const char* comment)
     fs::create_directory("results/");
     std::vector<fs::path> files;
 
-
-
     try {
         for (const auto& entry : fs::directory_iterator("images")) {
             if (entry.is_regular_file()) {

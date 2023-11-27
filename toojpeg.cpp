@@ -2,6 +2,9 @@
 #include <algorithm>
 #include <cmath>
 #include <future>
+#include <iostream>
+
+#include "preprocessed_image_holder.h"
 
 namespace // anonymous namespace to hide local functions / constants / etc.
 {
@@ -271,14 +274,15 @@ void DCT(float block[8*8], uint8_t stride)
 }
 
 // run DCT, quantize and write Huffman bit codes
-int16_t encodeBlock(BitWriter& writer, float block[8][8], const float scaled[8*8], int16_t lastDC,
-                    const BitCode huffmanDC[256], const BitCode huffmanAC[256], const BitCode* codewords)
+void encodeBlock(float block[8][8], const float scaled[8*8], int pos,
+                 std::vector<preprocessed_image_holder>& blocks)
 {
     // "linearize" the 8x8 block, treat it as a flat array of 64 floats
     auto block64 = (float*) block;
 
-    // DCT: rows
     DCT(block64, 0);
+
+    // DCT: rows
 //    for (auto offset = 0; offset < 8; offset++)
 //        DCT(block64 + offset*8, 1);
 //    // DCT: columns
@@ -286,7 +290,6 @@ int16_t encodeBlock(BitWriter& writer, float block[8][8], const float scaled[8*8
 //        DCT(block64 + offset*1, 8);
 
     // scale
-
     for (auto i = 0; i < 8*8; i++)
         block64[i] *= scaled[i];
 
@@ -306,8 +309,21 @@ int16_t encodeBlock(BitWriter& writer, float block[8][8], const float scaled[8*8
             posNonZero = i;
     }
 
-    // same "average color" as previous block ?
-    auto diff = DC - lastDC;
+    #pragma omp critical
+    {
+        blocks.push_back(preprocessed_image_holder(pos, quantized, DC, posNonZero));
+    }
+
+    //////////////////////////////
+}
+
+int16_t make_file_insertion(BitWriter& writer, preprocessed_image_holder& block,
+                            const BitCode huffmanDC[256], const BitCode huffmanAC[256], const BitCode* codewords,
+                            const int lastDC)
+{
+// same "average color" as previous block ?
+    auto diff = block.DC - lastDC;
+
     if (diff == 0)
         writer << huffmanDC[0x00];   // yes, write a special short symbol
     else
@@ -318,10 +334,10 @@ int16_t encodeBlock(BitWriter& writer, float block[8][8], const float scaled[8*8
 
     // encode ACs (quantized[1..63])
     auto offset = 0; // upper 4 bits count the number of consecutive zeros
-    for (auto i = 1; i <= posNonZero; i++) // quantized[0] was already written, skip all trailing zeros, too
+    for (auto i = 1; i <= block.posNonZero; i++) // quantized[0] was already written, skip all trailing zeros, too
     {
         // zeros are encoded in a special way
-        while (quantized[i] == 0) // found another zero ?
+        while (block.quantized[i] == 0) // found another zero ?
         {
             offset    += 0x10; // add 1 to the upper 4 bits
             // split into blocks of at most 16 consecutive zeros
@@ -333,17 +349,66 @@ int16_t encodeBlock(BitWriter& writer, float block[8][8], const float scaled[8*8
             i++;
         }
 
-        auto encoded = codewords[quantized[i]];
+        auto encoded = codewords[block.quantized[i]];
         // combine number of zeros with the number of bits of the next non-zero value
         writer << huffmanAC[offset + encoded.numBits] << encoded; // and the value itself
         offset = 0;
     }
 
     // send end-of-block code (0x00), only needed if there are trailing zeros
-    if (posNonZero < 8*8 - 1) // = 63
+    if (block.posNonZero < 8*8 - 1) // = 63
+    {
         writer << huffmanAC[0x00];
+    }
 
-    return DC;
+    return block.DC;
+}
+
+
+void write_into_file(int mcuSize, int height, int width, int maxWidth, int maxHeight, BitWriter& writer, bool isRGB,
+                     const BitCode huffmanDC_LUM[256], const BitCode huffmanAC_LUM[256],
+                     const BitCode huffmanDC_CHR[256], const BitCode huffmanAC_CHR[256],
+                     const BitCode* codewords,
+                     std::vector<preprocessed_image_holder>& b_Y, std::vector<preprocessed_image_holder>& b_Cd,
+                     std::vector<preprocessed_image_holder>& b_Cr)
+{
+//    #pragma omp parallel sections
+//    {
+
+//    }
+    auto comp = [](const auto& a, const auto& b) {
+        return a.pos < b.pos;
+    };
+
+    std::sort(b_Y.begin(), b_Y.end(),  comp);
+
+    std::sort(b_Cd.begin(), b_Cd.end(), comp);
+
+    std::sort(b_Cr.begin(), b_Cr.end(), comp);
+
+    int16_t lastYDC = 0, lastCbDC = 0, lastCrDC = 0;
+    for (auto mcuY = 0; mcuY < height; mcuY += mcuSize)
+    {
+        for (auto mcuX = 0; mcuX < width; mcuX += mcuSize)
+        {
+            for (auto blockY = 0; blockY < mcuSize; blockY += 8)
+            {
+                for (auto blockX = 0; blockX < mcuSize; blockX += 8)
+                {
+                    lastYDC = make_file_insertion(writer, b_Y.front(), huffmanDC_LUM, huffmanAC_LUM, codewords, lastYDC);
+                    b_Y.erase(b_Y.begin());
+                }
+            }
+            if (!isRGB)
+                continue;
+
+            lastCbDC = make_file_insertion(writer, b_Cd.front(), huffmanDC_CHR, huffmanAC_CHR, codewords, lastCbDC);
+            b_Cd.erase(b_Cd.begin());
+
+            lastCrDC = make_file_insertion(writer, b_Cr.front(), huffmanDC_CHR, huffmanAC_CHR, codewords, lastCrDC);
+            b_Cr.erase(b_Cr.begin());
+        }
+    }
 }
 
 // Jon's code includes the pre-generated Huffman codes
@@ -589,17 +654,21 @@ bool writeJpeg(WRITE_ONE_BYTE output, const void* pixels_, unsigned short width,
     const auto sampling = downsample ? 2 : 1; // 1x1 or 2x2 sampling
     const auto mcuSize  = 8 * sampling;
 
-    // average color of the previous MCU
-    int16_t lastYDC = 0, lastCbDC = 0, lastCrDC = 0;
+
     // convert from RGB to YCbCr
     float Y[8][8], Cb[8][8], Cr[8][8];
+    blocks_Y.clear();
+    blocks_Cb.clear();
+    blocks_Cr.clear();
 
     for (auto mcuY = 0; mcuY < height; mcuY += mcuSize) // each step is either 8 or 16 (=mcuSize)
+    {
         for (auto mcuX = 0; mcuX < width; mcuX += mcuSize)
         {
             // YCbCr 4:4:4 format: each MCU is a 8x8 block - the same applies to grayscale images, too
             // YCbCr 4:2:0 format: each MCU represents a 16x16 block, stored as 4x 8x8 Y-blocks plus 1x 8x8 Cb and 1x 8x8 Cr block)
             for (auto blockY = 0; blockY < mcuSize; blockY += 8) // iterate once (YCbCr444 and grayscale) or twice (YCbCr420)
+            {
                 for (auto blockX = 0; blockX < mcuSize; blockX += 8)
                 {
                     // now we finally have an 8x8 block ...
@@ -637,10 +706,11 @@ bool writeJpeg(WRITE_ONE_BYTE output, const void* pixels_, unsigned short width,
                     }
 
                     // encode Y channel
-                    lastYDC = encodeBlock(bitWriter, Y, scaledLuminance, lastYDC, huffmanLuminanceDC, huffmanLuminanceAC, codewords);
-                    // Cb and Cr are encoded about 50 lines below
+                    /// TODO: придумать, как давать зигзагообразную индексацию, иначе для сэмплирования не будет работать
+                    /// после сортировки массива блоков по индексу
+                    encodeBlock(Y, scaledLuminance, mcuY * int(width) / 64 + ((mcuX + blockX) / 8), blocks_Y);
                 }
-
+            }
             // grayscale images don't need any Cb and Cr information
             if (!isRGB)
                 continue;
@@ -689,9 +759,16 @@ bool writeJpeg(WRITE_ONE_BYTE output, const void* pixels_, unsigned short width,
                 } // end of YCbCr420 code for Cb and Cr
 
             // encode Cb and Cr
-            lastCbDC = encodeBlock(bitWriter, Cb, scaledChrominance, lastCbDC, huffmanChrominanceDC, huffmanChrominanceAC, codewords);
-            lastCrDC = encodeBlock(bitWriter, Cr, scaledChrominance, lastCrDC, huffmanChrominanceDC, huffmanChrominanceAC, codewords);
+            encodeBlock(Cb, scaledChrominance, (mcuY * int(width) / 64 + (mcuX / 8)), blocks_Cb);
+            encodeBlock(Cr, scaledChrominance, (mcuY * int(width) / 64 + (mcuX / 8)), blocks_Cr);
         }
+    }
+
+    write_into_file(mcuSize, height, width, maxWidth, maxHeight, bitWriter, isRGB,
+                         huffmanLuminanceDC, huffmanLuminanceAC,
+                         huffmanChrominanceDC, huffmanChrominanceAC, codewords,
+                         blocks_Y, blocks_Cb, blocks_Cr);
+
 
     bitWriter.flush(); // now image is completely encoded, write any bits still left in the buffer
 
